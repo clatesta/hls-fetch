@@ -21,6 +21,7 @@ use strict;
 use Getopt::Long;
 use HTML::Parser;
 use LWP::UserAgent;
+use IO::Socket::SSL qw();  # Added to ignore SSL certificate's validation
 use JSON;
 use File::Temp qw(tempfile);
 use URI::URL;
@@ -28,7 +29,7 @@ use constant READ_SIZE => 1024;
 use Time::HiRes qw( time sleep);
 
 my %opt = ('bandwidth' => 'max');
-Getopt::Long::GetOptions(\%opt, 'embedded', 'svtplay', 'playlist|p', 'output|o=s', 'bandwidth|b=s', 'quiet|q', 'force|f', 'skip-comments|s', 'count|c=i', 'verbose|v', 'no-decrypt', 'version', 'help') || exit 1;
+Getopt::Long::GetOptions(\%opt, 'embedded', 'svtplay', 'playlist|p', 'output|o=s', 'bandwidth|b=s', 'quiet|q', 'force|f', 'skip-comments|s', 'count|c=i', 'verbose|v', 'no-decrypt', 'insecure|k', 'range|r=i', 'version', 'help') || exit 1;
 
 if ($opt{'version'}) {
   print "hls-fetch 0.1\n";
@@ -54,6 +55,8 @@ if ($opt{'help'}) {
   print "  -v, --verbose         explain what is being done\n";
   print "  -q, --quiet           no output other than errors\n";
   print "      --no-decrypt      skip decryption even if stream should be decrypted\n";
+  print "  -k, --insecure        do not check the validity of SSL certificate\n";
+  print "  -r, --range           specify a byte range from O to 'r' Bytes\n";
   print "      --help            display this help and exit\n";
   print "      --version         output version information and exit\n";
   print "\nDecryption requires openssl.\n";
@@ -72,7 +75,18 @@ if (!exists $opt{'output'}) {
 }
 
 my ($url) = @ARGV;
-my $browser = LWP::UserAgent->new;
+
+my $browser = "";
+if (exists $opt{'insecure'}) {
+  $browser = LWP::UserAgent->new(
+    ssl_opts => {
+      SSL_verify_mode => IO::Socket::SSL::SSL_VERIFY_NONE,
+      verify_hostname => 0,
+      SSL_hostname => '', }
+  ); 
+} else {
+  $browser = LWP::UserAgent->new;
+}
 $browser->cookie_jar({});
 
 my $video_file = $opt{'output'};
@@ -182,7 +196,7 @@ foreach my $line (@lines) {
     die "$url: unsupported encryption method $attr{'METHOD'} in playlist\n" if exists $attr{'METHOD'} && $attr{'METHOD'} ne 'AES-128';
     $cryptkey_url = $attr{'URI'};
     die "$url: missing encryption key URI in playlist\n" if !defined $cryptkey_url;
-  } elsif ($line !~ /^#EXT/) {
+  } elsif ($line !~ /^#/) {
     $segments{$sequence} = { 'url' => $line, 'cryptkey_url' => $cryptkey_url };
     $sequence++;
   }
@@ -226,9 +240,9 @@ foreach my $sequence (sort { $a <=> $b } keys %segments) {
 
   my ($segment_fh, $segment_file) = tempfile();
   close $segment_fh;
-  my ($data, $size, $elapsed) = 0, 0, 0;
+  my ($data, $size, $elapsed, $code) = 0, 0, 0, 0;
   eval {
-    eval { ($data, $size, $elapsed) = fetch_url($segment_url, $segment_file) }; die "$segment_url: cannot not fetch segment: $@" if $@;
+    eval { ($data, $size, $elapsed, $code) = fetch_url($segment_url, $segment_file) }; die "$segment_url: cannot not fetch segment: $@" if $@;
     if (!$opt{'no-decrypt'} && defined $segment->{'cryptkey_url'}) {
       my ($decrypt_fh, $decrypt_file) = tempfile();
       close $decrypt_fh;
@@ -248,7 +262,7 @@ foreach my $sequence (sort { $a <=> $b } keys %segments) {
     }
     close $segment_fh;
   };
-  printf("%.0f\t%.03f\n", $size/READ_SIZE, $elapsed) if $opt{'verbose'};
+  printf("%d\t%.0f\t%.03f\n", $code, $size/READ_SIZE, $elapsed) if $opt{'verbose'};
 
   unlink $segment_file || warn "$segment_file: cannot remove file: $!\n";
   die $@ if $@;
