@@ -284,13 +284,21 @@ sub parse_m3u_attribs {
 sub fetch_url {
   my $start_time = time();
   my ($url, $filename) = @_;
+
+  # If it's not a Playlist, get only 1st Byte
+  if (exists $opt{'range'}) {
+    if ($url !~ /.m3u8$/) {
+      $browser->default_headers->push_header(Range => "bytes=0-$opt{'range'}");
+    }
+  }
+
   if (defined $filename) {
     my $response = $browser->get($url, ":content_file" => $filename);
     die $response->status_line(), "\n" if !$response->is_success;
-    return (undef, $response->content_length, time() - $start_time);
+    return (undef, $response->content_length, time() - $start_time, $response->code);
   } else {
     my $response = $browser->get($url);
     die $response->status_line(), "\n" if !$response->is_success;
-    return ($response->decoded_content(), $response->content_length, time() - $start_time);
+    return ($response->decoded_content(), $response->content_length, time() - $start_time, $response->code);
   }
 }
